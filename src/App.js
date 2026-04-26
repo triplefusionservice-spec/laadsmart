@@ -3,6 +3,7 @@ import { supabase } from './supabase';
 import laadpassen from './data/laadpassen';
 import PasKaart from './components/PasKaart';
 import SessieForm from './components/SessieForm';
+import { downloadMaandrapportCsv, downloadMaandrapportPdf } from './utils/maandrapportExport';
 
 function Login({ onLogin }) {
   const [email, setEmail] = useState('');
@@ -79,9 +80,10 @@ function App() {
     setScherm('passen');
   };
 
-  const totaal = sessies.reduce((sum, s) => sum + s.bedrag, 0);
-  const totaalBtw = sessies.reduce((sum, s) => sum + s.btw, 0);
+  const totaal = sessies.reduce((sum, s) => sum + Number(s.bedrag ?? 0), 0);
+  const totaalBtw = sessies.reduce((sum, s) => sum + Number(s.btw ?? 0), 0);
   const exclBtw = totaal - totaalBtw;
+  const rapportTotalen = { totaal, exclBtw, totaalBtw };
 
   if (!gebruiker) return <Login />;
 
@@ -121,14 +123,14 @@ function App() {
             <>
               <div style={{ fontSize: '16px', fontWeight: '700', color: 'white', marginBottom: '12px' }}>Recente sessies</div>
               {sessies.map((s, i) => (
-                <div key={i} style={{ background: '#0f3d22', border: '1px solid #1f6b3d', borderLeft: `4px solid ${s.pas_kleur}`, borderRadius: '16px', padding: '14px 16px', marginBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div key={s.id ?? i} style={{ background: '#0f3d22', border: '1px solid #1f6b3d', borderLeft: `4px solid ${laadpassen.find(p => p.naam === s.pas_naam)?.kleur || '#6db88a'}`, borderRadius: '16px', padding: '14px 16px', marginBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
                     <div style={{ color: 'white', fontWeight: '600', fontSize: '14px' }}>{s.pas_naam}</div>
                     <div style={{ color: '#6db88a', fontSize: '12px', marginTop: '2px' }}>{s.datum} · {s.kwh} kWh</div>
                   </div>
                   <div style={{ textAlign: 'right' }}>
-                    <div style={{ color: 'white', fontWeight: '600' }}>€{s.bedrag.toFixed(2)}</div>
-                    <div style={{ color: '#6db88a', fontSize: '11px' }}>BTW €{s.btw.toFixed(2)}</div>
+                    <div style={{ color: 'white', fontWeight: '600' }}>€{Number(s.bedrag ?? 0).toFixed(2)}</div>
+                    <div style={{ color: '#6db88a', fontSize: '11px' }}>BTW €{Number(s.btw ?? 0).toFixed(2)}</div>
                   </div>
                 </div>
               ))}
@@ -148,19 +150,22 @@ function App() {
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid #1f6b3d', color: '#6db88a', fontSize: '13px' }}><span>Totaal excl. BTW</span><span style={{ color: 'white', fontWeight: '600' }}>€{exclBtw.toFixed(2)}</span></div>
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid #1f6b3d', color: '#6db88a', fontSize: '13px' }}><span>Terug te vorderen BTW</span><span style={{ color: '#c8ff00', fontWeight: '600' }}>€{totaalBtw.toFixed(2)}</span></div>
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid #1f6b3d', color: '#6db88a', fontSize: '13px' }}><span>Aantal sessies</span><span style={{ color: 'white', fontWeight: '600' }}>{sessies.length}x</span></div>
-              <button
-                onClick={() => {
-                  const inhoud = `LaadSmart Maandrapport\n\nTotaal incl. BTW: €${totaal.toFixed(2)}\nTotaal excl. BTW: €${exclBtw.toFixed(2)}\nTerug te vorderen BTW: €${totaalBtw.toFixed(2)}\nAantal sessies: ${sessies.length}\n\nSessies:\n${sessies.map(s => `${s.datum} - ${s.pas_naam} - ${s.kwh}kWh - €${s.bedrag.toFixed(2)} (BTW €${s.btw.toFixed(2)})`).join('\n')}`;
-                  const blob = new Blob([inhoud], { type: 'text/plain' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = 'LaadSmart_Rapport.txt';
-                  a.click();
-                }}
-                style={{ background: '#c8ff00', color: '#0a2e1a', border: 'none', borderRadius: '12px', padding: '14px', width: '100%', fontSize: '15px', fontWeight: '700', cursor: 'pointer', marginTop: '16px' }}>
-                📥 Download Rapport
-              </button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '16px' }}>
+                <button
+                  type="button"
+                  onClick={() => downloadMaandrapportPdf(sessies, rapportTotalen, gebruiker?.email ?? '')}
+                  style={{ background: '#c8ff00', color: '#0a2e1a', border: 'none', borderRadius: '12px', padding: '14px', width: '100%', fontSize: '15px', fontWeight: '700', cursor: 'pointer' }}
+                >
+                  📄 Download PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={() => downloadMaandrapportCsv(sessies, rapportTotalen, gebruiker?.email ?? '')}
+                  style={{ background: 'transparent', color: '#c8ff00', border: '2px solid #c8ff00', borderRadius: '12px', padding: '12px', width: '100%', fontSize: '14px', fontWeight: '700', cursor: 'pointer' }}
+                >
+                  📊 Download CSV
+                </button>
+              </div>
             </>
           )}
         </div>
