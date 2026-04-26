@@ -3,9 +3,10 @@ import { supabase } from './supabase';
 import laadpassen from './data/laadpassen';
 import PasKaart from './components/PasKaart';
 import SessieForm from './components/SessieForm';
+import ImportModal from './components/ImportModal';
 import { downloadMaandrapportCsv, downloadMaandrapportPdf } from './utils/maandrapportExport';
 
-function Login({ onLogin }) {
+function Login() {
   const [email, setEmail] = useState('');
   const [wachtwoord, setWachtwoord] = useState('');
   const [isRegistreren, setIsRegistreren] = useState(false);
@@ -50,6 +51,7 @@ function App() {
   const [scherm, setScherm] = useState('passen');
   const [laden, setLaden] = useState(true);
   const [gebruiker, setGebruiker] = useState(null);
+  const [toonImport, setToonImport] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -89,6 +91,7 @@ function App() {
 
   return (
     <div style={{ backgroundColor: '#0a2e1a', minHeight: '100vh', padding: '24px 20px 100px', fontFamily: 'sans-serif', maxWidth: '390px', margin: '0 auto' }}>
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
         <div>
           <h1 style={{ fontSize: '28px', fontWeight: '800', color: 'white', margin: 0 }}>Laad<span style={{ color: '#c8ff00' }}>Smart</span></h1>
@@ -111,6 +114,9 @@ function App() {
 
       {!laden && scherm === 'passen' && (
         <>
+          <button onClick={() => setToonImport(true)} style={{ background: '#0f3d22', border: '1px solid #1f6b3d', borderRadius: '12px', padding: '12px 16px', color: '#c8ff00', fontSize: '14px', fontWeight: '600', cursor: 'pointer', width: '100%', marginBottom: '16px' }}>
+            📥 Sessies importeren
+          </button>
           <div style={{ fontSize: '16px', fontWeight: '700', color: 'white', marginBottom: '12px' }}>Mijn laadpassen</div>
           {laadpassen.map(pas => (<PasKaart key={pas.id} pas={pas} />))}
         </>
@@ -156,20 +162,22 @@ function App() {
                   onClick={() => downloadMaandrapportPdf(sessies, rapportTotalen, gebruiker?.email ?? '')}
                   style={{ background: '#c8ff00', color: '#0a2e1a', border: 'none', borderRadius: '12px', padding: '14px', width: '100%', fontSize: '15px', fontWeight: '700', cursor: 'pointer' }}
                 >
-                  📄 Download PDF
+                  Download PDF
                 </button>
                 <button
                   type="button"
                   onClick={() => downloadMaandrapportCsv(sessies, rapportTotalen, gebruiker?.email ?? '')}
                   style={{ background: 'transparent', color: '#c8ff00', border: '2px solid #c8ff00', borderRadius: '12px', padding: '12px', width: '100%', fontSize: '14px', fontWeight: '700', cursor: 'pointer' }}
                 >
-                  📊 Download CSV
+                  Download CSV
                 </button>
               </div>
             </>
           )}
         </div>
       )}
+
+      {toonImport && <ImportModal onSluiten={() => setToonImport(false)} onImport={haalSessiesOp} />}
 
       <div style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '390px', background: '#0a2e1a', borderTop: '1px solid #1f6b3d', padding: '12px 20px 28px', display: 'flex', justifyContent: 'space-around' }}>
         {[{ id: 'passen', icon: '💳', label: 'Passen' }, { id: 'toevoegen', icon: '⚡', label: 'Toevoegen' }, { id: 'rapport', icon: '📄', label: 'Rapport' }].map(item => (
