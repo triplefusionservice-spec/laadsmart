@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../supabase';
 
 const inputStyle = {
@@ -282,11 +282,95 @@ function EmailModal({ user, mfaTotpActief, pendingAuthActionRef, onSluiten, onGe
 
 export function AccountScherm({ user, mfaTotpActief, pendingAuthActionRef, onOpenAccountVerwijder, onUserRefresh, onDisclaimer, onToast }) {
   const [modal, setModal] = useState(null);
+  const [abonnement, setAbonnement] = useState(null);
+  const [abonnementLaden, setAbonnementLaden] = useState(false);
+  const [abonnementError, setAbonnementError] = useState('');
+  const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const [portalBusy, setPortalBusy] = useState(false);
 
   const email = user?.email ?? '';
   const emailVerified = Boolean(user?.email_confirmed_at);
   const pendingEmail = user?.new_email;
   const idShort = user?.id ? `${user.id.slice(0, 8)}…` : '—';
+
+  const abonnementLabel = useMemo(() => {
+    const plan = abonnement?.plan || 'free';
+    if (plan === 'business') return 'Business';
+    if (plan === 'pro') return 'Pro';
+    return 'Free';
+  }, [abonnement?.plan]);
+
+  const statusLabel = useMemo(() => {
+    const s = (abonnement?.status || '').toLowerCase();
+    return s || 'onbekend';
+  }, [abonnement?.status]);
+
+  const laadAbonnement = async () => {
+    if (!user?.id) return;
+    setAbonnementLaden(true);
+    setAbonnementError('');
+    try {
+      const { data, error } = await supabase
+        .from('subscriptions')
+        .select('plan,status,current_period_end,stripe_customer_id,stripe_subscription_id,updated_at')
+        .eq('user_id', user.id)
+        .maybeSingle();
+      if (error) throw error;
+      setAbonnement(data || null);
+    } catch (e) {
+      setAbonnement(null);
+      setAbonnementError(e?.message || 'Kon abonnement niet laden.');
+    } finally {
+      setAbonnementLaden(false);
+    }
+  };
+
+  useEffect(() => {
+    void laadAbonnement();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  const startCheckout = async (plan) => {
+    setCheckoutBusy(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const access_token = session?.access_token;
+      if (!access_token) { if (onToast) onToast('Geen geldige sessie.', 'error'); return; }
+      const res = await fetch('/api/stripe/create-checkout-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan, access_token }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.url) throw new Error(json?.error || 'Checkout starten mislukt.');
+      window.location.href = json.url;
+    } catch (e) {
+      if (onToast) onToast(e?.message || 'Checkout starten mislukt.', 'error');
+    } finally {
+      setCheckoutBusy(false);
+    }
+  };
+
+  const openPortal = async () => {
+    setPortalBusy(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const access_token = session?.access_token;
+      if (!access_token) { if (onToast) onToast('Geen geldige sessie.', 'error'); return; }
+      const res = await fetch('/api/stripe/create-portal-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ access_token }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.url) throw new Error(json?.error || 'Portal openen mislukt.');
+      window.location.href = json.url;
+    } catch (e) {
+      if (onToast) onToast(e?.message || 'Portal openen mislukt.', 'error');
+    } finally {
+      setPortalBusy(false);
+    }
+  };
 
   return (
     <>
@@ -314,6 +398,36 @@ export function AccountScherm({ user, mfaTotpActief, pendingAuthActionRef, onOpe
         <div>
           <div style={{ fontSize: '11px', color: '#6db88a', fontWeight: '600' }}>Authenticator (2FA)</div>
           <div style={{ fontSize: '14px', color: mfaTotpActief ? '#c8ff00' : '#6db88a' }}>{mfaTotpActief ? 'Actief' : 'Niet actief'}</div>
+        </div>
+      </div>
+
+      <div style={{ background: '#0f3d22', border: '1px solid #1f6b3d', borderRadius: '16px', padding: '16px', marginBottom: '16px' }}>
+        <div style={{ fontSize: '13px', fontWeight: '700', color: '#c8ff00', marginBottom: '10px' }}>Abonnement</div>
+        <div style={{ color: '#6db88a', fontSize: '13px', lineHeight: 1.5, marginBottom: '8px' }}>
+          Huidig: <strong style={{ color: 'white' }}>{abonnementLabel}</strong> · status: <strong style={{ color: 'white' }}>{statusLabel}</strong>
+        </div>
+        {abonnement?.current_period_end ? (
+          <div style={{ color: '#a8f0c6', fontSize: '12px', marginBottom: '10px' }}>
+            Periode-einde: {new Date(abonnement.current_period_end).toLocaleDateString('nl-NL')}
+          </div>
+        ) : null}
+        {abonnementError ? <div style={{ color: '#ffb3b3', fontSize: '12px', marginBottom: '10px' }}>{abonnementError}</div> : null}
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <button type="button" disabled={checkoutBusy} onClick={() => startCheckout('pro')} style={{ ...btnPrim, width: 'auto', padding: '12px 14px', fontSize: '13px', opacity: checkoutBusy ? 0.7 : 1 }}>
+            {checkoutBusy ? 'Bezig…' : 'Upgrade: Pro'}
+          </button>
+          <button type="button" disabled={checkoutBusy} onClick={() => startCheckout('business')} style={{ ...btnPrim, width: 'auto', padding: '12px 14px', fontSize: '13px', opacity: checkoutBusy ? 0.7 : 1 }}>
+            {checkoutBusy ? 'Bezig…' : 'Upgrade: Business'}
+          </button>
+          <button type="button" disabled={portalBusy} onClick={openPortal} style={{ ...btnSec, width: 'auto', marginTop: 0, padding: '12px 14px', fontSize: '13px', opacity: portalBusy ? 0.7 : 1 }}>
+            {portalBusy ? 'Openen…' : 'Beheer in Stripe'}
+          </button>
+          <button type="button" disabled={abonnementLaden} onClick={laadAbonnement} style={{ ...btnSec, width: 'auto', marginTop: 0, padding: '12px 14px', fontSize: '13px', opacity: abonnementLaden ? 0.7 : 1 }}>
+            {abonnementLaden ? 'Laden…' : 'Ververs status'}
+          </button>
+        </div>
+        <div style={{ marginTop: '10px', fontSize: '11px', color: '#6db88a', lineHeight: 1.4 }}>
+          Status wordt bijgewerkt via Stripe webhooks. Na betaling kan dit 10–30 seconden duren.
         </div>
       </div>
 
