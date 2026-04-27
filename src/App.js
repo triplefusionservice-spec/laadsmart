@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, lazy, Suspense } from 'react';
 import { supabase } from './supabase';
 import PasKaart from './components/PasKaart';
 import SessieForm from './components/SessieForm';
@@ -36,6 +36,19 @@ import {
 } from './utils/accountDeletion';
 import { berekenCo2EnBomen, CO2_KG_PER_BOOM_PER_JAAR, CO2_KG_PER_KWH_INDICATIEF } from './utils/co2Bomen';
 import { kleurVoorPasNaam } from './data/laadpasAanbiedersCatalogus';
+import {
+  loadBtwReminderEnabled,
+  saveBtwReminderEnabled,
+  loadBtwReminderBrowserNotif,
+  saveBtwReminderBrowserNotif,
+  volgendeBtwDeadline,
+  dagenTot,
+  formatDatumNl,
+  shouldShowBtwReminderToday,
+  markBtwReminderShownToday,
+} from './utils/btwReminder';
+
+const LaadpalenKaart = lazy(() => import('./components/LaadpalenKaart'));
 
 function mfaTotpSkippedStorageKey(userId) {
   return `laadsmart_mfa_totp_skipped_${userId}`;
@@ -279,6 +292,8 @@ function App() {
   const [toonDisclaimer, setToonDisclaimer] = useState(false);
   const [toonAccountVerwijder, setToonAccountVerwijder] = useState(false);
   const [toonHelpAi, setToonHelpAi] = useState(false);
+  const [btwReminderEnabled, setBtwReminderEnabled] = useState(() => loadBtwReminderEnabled());
+  const [btwReminderBrowserNotif, setBtwReminderBrowserNotif] = useState(() => loadBtwReminderBrowserNotif());
   const [laadpassenLijst, setLaadpassenLijst] = useState(() => sortPassesByVolgorde(getMergedPasses()));
   const [mijnLaadpassenIngeklapt, setMijnLaadpassenIngeklapt] = useState(() => loadMijnLaadpassenIngeklapt());
   const [dragPasId, setDragPasId] = useState(null);
@@ -318,6 +333,8 @@ function App() {
 
   useEffect(() => { saveAdministratieNaam(administratieNaam); }, [administratieNaam]);
   useEffect(() => { saveMijnLaadpassenIngeklapt(mijnLaadpassenIngeklapt); }, [mijnLaadpassenIngeklapt]);
+  useEffect(() => { saveBtwReminderEnabled(btwReminderEnabled); }, [btwReminderEnabled]);
+  useEffect(() => { saveBtwReminderBrowserNotif(btwReminderBrowserNotif); }, [btwReminderBrowserNotif]);
   useEffect(() => {
     try {
       localStorage.setItem('laadsmart_rapport_mode', rapportMode);
@@ -594,6 +611,31 @@ function App() {
   };
 
   const showToast = (message, type = 'info') => setToast({ message, type, ts: Date.now() });
+
+  useEffect(() => {
+    if (!btwReminderEnabled) return;
+    if (rapportMode !== 'zakelijk') return;
+    if (!shouldShowBtwReminderToday()) return;
+    const deadline = volgendeBtwDeadline(new Date());
+    if (!deadline) return;
+    const d = dagenTot(deadline, new Date());
+    if (d == null) return;
+    if (d > 14) return;
+    markBtwReminderShownToday();
+    const msg = d <= 0
+      ? `BTW-aangifte: deadline is vandaag (${formatDatumNl(deadline)}).`
+      : `BTW-aangifte: nog ${d} dag(en) tot deadline (${formatDatumNl(deadline)}).`;
+    showToast(msg, d <= 3 ? 'error' : 'info');
+    if (btwReminderBrowserNotif && typeof Notification !== 'undefined') {
+      try {
+        if (Notification.permission === 'granted') {
+          new Notification('LaadSmart · BTW herinnering', { body: msg });
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }, [btwReminderEnabled, btwReminderBrowserNotif, rapportMode]);
 
   const vraagConfirm = ({ title, message, confirmLabel, cancelLabel, danger } = {}) =>
     new Promise((resolve) => {
@@ -932,6 +974,12 @@ function App() {
           </>
         )}
 
+        {!laden && scherm === 'kaart' && (
+          <Suspense fallback={<div style={{ color: '#6db88a', padding: '14px 0' }}>Kaart laden…</div>}>
+            <LaadpalenKaart onToast={showToast} />
+          </Suspense>
+        )}
+
         {!laden && scherm === 'rapport' && (
           <>
             <div style={{ background: '#0f3d22', border: '1px solid #1f6b3d', borderRadius: '16px', padding: '10px', marginBottom: '12px', display: 'flex', gap: '10px' }}>
@@ -994,6 +1042,82 @@ function App() {
             {rapportMode === 'zakelijk' && (
               <>
                 <GrafiekKosten sessies={sessies} />
+
+                <div style={{ background: '#0f3d22', border: '1px solid #1f6b3d', borderRadius: '16px', padding: '16px', marginBottom: '16px' }}>
+                  <div style={{ fontSize: '15px', fontWeight: '800', color: 'white', marginBottom: '6px' }}>⏰ BTW herinnering (zakelijk)</div>
+                  <div style={{ fontSize: '13px', color: '#6db88a', lineHeight: 1.45, marginBottom: '12px' }}>
+                    Dit is een reminder in de app. Voor echte push-notificaties als de app dicht is, is een kleine backend nodig.
+                  </div>
+                  <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      onClick={() => setBtwReminderEnabled((v) => !v)}
+                      style={{
+                        background: btwReminderEnabled ? '#c8ff00' : 'transparent',
+                        color: btwReminderEnabled ? '#0a2e1a' : '#c8ff00',
+                        border: '2px solid #c8ff00',
+                        borderRadius: '12px',
+                        padding: '10px 12px',
+                        fontWeight: '900',
+                        fontSize: '12px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {btwReminderEnabled ? 'Aan' : 'Uit'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (typeof Notification === 'undefined') { showToast('Browser-notificaties niet ondersteund.', 'error'); return; }
+                        if (Notification.permission === 'default') {
+                          try {
+                            const p = await Notification.requestPermission();
+                            if (p !== 'granted') { showToast('Geen toestemming voor notificaties.', 'error'); return; }
+                          } catch {
+                            showToast('Toestemming vragen mislukt.', 'error');
+                            return;
+                          }
+                        }
+                        if (Notification.permission !== 'granted') { showToast('Geen toestemming voor notificaties.', 'error'); return; }
+                        setBtwReminderBrowserNotif(true);
+                        showToast('Browser-notificaties staan aan (alleen wanneer de app open is).', 'info');
+                      }}
+                      style={{
+                        background: btwReminderBrowserNotif ? '#1a5c34' : 'transparent',
+                        color: btwReminderBrowserNotif ? '#c8ff00' : '#6db88a',
+                        border: '1px solid #1f6b3d',
+                        borderRadius: '12px',
+                        padding: '10px 12px',
+                        fontWeight: '800',
+                        fontSize: '12px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {btwReminderBrowserNotif ? 'Browser-notificaties: aan' : 'Browser-notificaties: zet aan'}
+                    </button>
+                    {btwReminderBrowserNotif && (
+                      <button
+                        type="button"
+                        onClick={() => { setBtwReminderBrowserNotif(false); showToast('Browser-notificaties uit.', 'info'); }}
+                        style={{
+                          background: 'transparent',
+                          color: '#6db88a',
+                          border: '1px solid #1f6b3d',
+                          borderRadius: '12px',
+                          padding: '10px 12px',
+                          fontWeight: '800',
+                          fontSize: '12px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Uit
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ marginTop: '10px', fontSize: '12px', color: '#a8f0c6' }}>
+                    Volgende deadline (indicatief): <strong style={{ color: 'white' }}>{formatDatumNl(volgendeBtwDeadline(new Date())) || '-'}</strong>
+                  </div>
+                </div>
 
             <div style={{ background: 'linear-gradient(135deg, #1a5c34, #0f4a25)', borderRadius: '20px', padding: '20px', marginBottom: '16px', border: '1px solid #1f6b3d' }}>
               <div style={{ fontSize: '13px', color: '#a8f0c6', fontWeight: '700', letterSpacing: '0.02em' }}>Totaal over selectie (BTW)</div>
@@ -1166,7 +1290,7 @@ function App() {
       <AccountVerwijderModal open={toonAccountVerwijder} userEmail={gebruiker.email} userId={gebruiker.id} onSluiten={() => setToonAccountVerwijder(false)} onVerwijderd={() => { setToonAccountVerwijder(false); setSessies([]); setScherm('passen'); }} onToast={showToast} />
 
       <div style={{ flexShrink: 0, width: '100%', maxWidth: '390px', margin: '0 auto', background: '#0a2e1a', borderTop: '1px solid #1f6b3d', padding: '12px 12px calc(12px + env(safe-area-inset-bottom, 0px))', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: '4px' }}>
-        {[{ id: 'passen', icon: '💳', label: 'Passen' }, { id: 'toevoegen', icon: '⚡', label: 'Toevoegen' }, { id: 'rapport', icon: '📄', label: 'Rapport' }, { id: 'account', icon: '👤', label: 'Account' }].map((item) => (
+        {[{ id: 'passen', icon: '💳', label: 'Passen' }, { id: 'toevoegen', icon: '⚡', label: 'Toevoegen' }, { id: 'kaart', icon: '🗺️', label: 'Kaart' }, { id: 'rapport', icon: '📄', label: 'Rapport' }, { id: 'account', icon: '👤', label: 'Account' }].map((item) => (
           <div key={item.id} role="button" tabIndex={0} onClick={() => setScherm(item.id)} onKeyDown={(e) => e.key === 'Enter' && setScherm(item.id)} style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', cursor: 'pointer', opacity: scherm === item.id ? 1 : 0.4 }}>
             <div style={{ fontSize: '20px' }}>{item.icon}</div>
             <div style={{ fontSize: '9px', color: scherm === item.id ? '#c8ff00' : '#6db88a', textAlign: 'center', lineHeight: 1.1 }}>{item.label}</div>
