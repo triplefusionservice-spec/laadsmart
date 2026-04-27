@@ -5,5 +5,6 @@
 import '@testing-library/jest-dom';
 import { TextDecoder, TextEncoder } from 'util';
 
-global.TextEncoder = TextEncoder;
-global.TextDecoder = TextDecoder;
+// jsPDF (via tests importing App) expects these in the Jest/jsdom environment.
+globalThis.TextEncoder = TextEncoder;
+globalThis.TextDecoder = TextDecoder;

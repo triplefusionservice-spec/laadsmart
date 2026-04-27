@@ -1,157 +1,236 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { formatDatumNlIso } from './sessieFilters';
 
-function escapeCsvCell(value) {
-  const s = String(value ?? '');
-  if (/[";\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+function escapeCsvCell(val) {
+  const s = String(val ?? '');
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
 
-function sortedSessies(sessies) {
-  return [...sessies].sort((a, b) => {
-    const da = String(a.datum ?? '');
-    const db = String(b.datum ?? '');
-    if (da !== db) return da.localeCompare(db);
-    return Number(a.id ?? 0) - Number(b.id ?? 0);
-  });
+const DISCLAIMER =
+  'Dit overzicht is een hulpmiddel voor administratie en BTW-verwerking. ' +
+  'Controleer bedragen aan de hand van je facturen en bankafschriften. ' +
+  'Bij twijfel of complexe situaties: raadpleeg je belastingadviseur of de Belastingdienst.';
+
+function bestandsnaamFragment(van, tot) {
+  const v = String(van || '').replace(/\//g, '-');
+  const t = String(tot || '').replace(/\//g, '-');
+  if (v && t) return `${v}_${t}`;
+  return new Date().toISOString().slice(0, 10);
 }
 
-function rapportFilename(ext) {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
-  return `LaadSmart_rapport_${stamp}.${ext}`;
+function pasnrVoorNaam(meta, naam) {
+  const m = meta?.pasnummerByNaam;
+  if (!m || naam == null) return '';
+  const v = m[String(naam)];
+  if (v == null || String(v).trim() === '') return '';
+  return String(v).trim();
 }
 
-function triggerDownload(blob, filename) {
+function buildCsvRows(sessies, totalen, meta) {
+  const lines = [];
+  lines.push(['LaadSmart — overzicht elektrisch laden (BTW)'].map(escapeCsvCell).join(','));
+  lines.push(['Rapportperiode (filter)', `${meta.van} t/m ${meta.tot}`].map(escapeCsvCell).join(','));
+  if (meta.periodeLabel) lines.push(['Periode (label)', meta.periodeLabel].map(escapeCsvCell).join(','));
+  if (meta.administratieNaam?.trim()) {
+    lines.push(['Administratie / onderneming', meta.administratieNaam.trim()].map(escapeCsvCell).join(','));
+  }
+  if (meta.email) lines.push(['Account (referentie)', meta.email].map(escapeCsvCell).join(','));
+  if (meta.geselecteerdePassen?.length) {
+    lines.push(['Geselecteerde laadpassen', meta.geselecteerdePassen.join('; ')].map(escapeCsvCell).join(','));
+  }
+  lines.push(['BTW-tarief sessies', '21% (hoog)'].map(escapeCsvCell).join(','));
+  lines.push('');
+  if (meta.totalenPerPas && Object.keys(meta.totalenPerPas).length > 0) {
+    lines.push(['Samenvatting per leverancier'].map(escapeCsvCell).join(','));
+    lines.push(['Leverancier', 'Pasnr.', 'Sessies', 'Excl. BTW', 'BTW 21%', 'Incl. BTW'].map(escapeCsvCell).join(','));
+    const namen = Object.keys(meta.totalenPerPas).sort((a, b) => a.localeCompare(b, 'nl'));
+    for (const naam of namen) {
+      const r = meta.totalenPerPas[naam];
+      const incl = Number(r.bedrag ?? 0);
+      const btw = Number(r.btw ?? 0);
+      lines.push(
+        [naam, pasnrVoorNaam(meta, naam), r.sessies, (incl - btw).toFixed(2), btw.toFixed(2), incl.toFixed(2)]
+          .map(escapeCsvCell)
+          .join(',')
+      );
+    }
+    lines.push('');
+  }
+  lines.push(['Specificatie (alle sessies in selectie)'].map(escapeCsvCell).join(','));
+  lines.push(['Datum (dd-mm-jjjj)', 'Leverancier', 'Pasnr.', 'kWh', 'Excl. BTW', 'BTW 21%', 'Incl. BTW'].map(escapeCsvCell).join(','));
+  if (!sessies.length) {
+    lines.push(
+      ['—', 'Geen sessies in deze periode voor de gekozen laadpassen', '', '', '0.00', '0.00', '0.00'].map(escapeCsvCell).join(',')
+    );
+  }
+  for (const s of sessies) {
+    const incl = Number(s.bedrag ?? 0);
+    const btw = Number(s.btw ?? 0);
+    const excl = incl - btw;
+    lines.push(
+      [
+        formatDatumNlIso(s.datum),
+        s.pas_naam,
+        pasnrVoorNaam(meta, s.pas_naam),
+        s.kwh,
+        excl.toFixed(2),
+        btw.toFixed(2),
+        incl.toFixed(2),
+      ]
+        .map(escapeCsvCell)
+        .join(',')
+    );
+  }
+  lines.push('');
+  lines.push(
+    ['Totaal excl. BTW', '', '', '', Number(totalen.exclBtw ?? 0).toFixed(2), '', ''].map(escapeCsvCell).join(',')
+  );
+  lines.push(
+    ['Totaal BTW 21%', '', '', '', '', Number(totalen.totaalBtw ?? 0).toFixed(2), ''].map(escapeCsvCell).join(',')
+  );
+  lines.push(
+    ['Totaal incl. BTW', '', '', '', '', '', Number(totalen.totaal ?? 0).toFixed(2)].map(escapeCsvCell).join(',')
+  );
+  lines.push('');
+  lines.push([DISCLAIMER].map(escapeCsvCell).join(','));
+  return lines.join('\r\n');
+}
+
+/**
+ * @param {object} meta — { email, administratieNaam, van, tot, periodeLabel, geselecteerdePassen, totalenPerPas, pasnummerByNaam }
+ */
+export function downloadMaandrapportCsv(sessies, rapportTotalen, meta = {}) {
+  const csv = buildCsvRows(sessies, rapportTotalen, meta);
+  const blob = new Blob(['\ufeff', csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename;
+  a.download = `laadsmart-btw-${bestandsnaamFragment(meta.van, meta.tot)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
 
 /**
- * @param {object[]} sessies
- * @param {{ totaal: number; exclBtw: number; totaalBtw: number }} totals
- * @param {string} [accountEmail]
+ * @param {object} meta — zie downloadMaandrapportCsv
  */
-export function downloadMaandrapportCsv(sessies, totals, accountEmail = '') {
-  const rows = sortedSessies(sessies);
-  const sep = ';';
-  const header = ['Datum', 'Laadpas', 'kWh', 'Bedrag incl. BTW (EUR)', 'BTW (EUR)', 'Excl. BTW (EUR)'];
-  const lines = ['LaadSmart maandrapport'];
-  if (accountEmail) lines.push(`Account: ${accountEmail}`);
-  lines.push(
-    '',
-    ['Totaal incl. BTW', totals.totaal.toFixed(2)].map(escapeCsvCell).join(sep),
-    ['Totaal excl. BTW', totals.exclBtw.toFixed(2)].map(escapeCsvCell).join(sep),
-    ['Terug te vorderen BTW', totals.totaalBtw.toFixed(2)].map(escapeCsvCell).join(sep),
-    ['Aantal sessies', String(rows.length)].map(escapeCsvCell).join(sep),
-    '',
-    header.map(escapeCsvCell).join(sep),
-    ...rows.map((s) => {
-      const bed = Number(s.bedrag ?? 0);
-      const btw = Number(s.btw ?? 0);
-      const excl = bed - btw;
-      return [
-        escapeCsvCell(s.datum),
-        escapeCsvCell(s.pas_naam),
-        escapeCsvCell(s.kwh),
-        escapeCsvCell(bed.toFixed(2)),
-        escapeCsvCell(btw.toFixed(2)),
-        escapeCsvCell(excl.toFixed(2)),
-      ].join(sep);
-    }),
-  );
-  const csv = `\uFEFF${lines.join('\r\n')}`;
-  triggerDownload(new Blob([csv], { type: 'text/csv;charset=utf-8' }), rapportFilename('csv'));
-}
-
-/**
- * @param {object[]} sessies
- * @param {{ totaal: number; exclBtw: number; totaalBtw: number }} totals
- * @param {string} [accountEmail]
- */
-export function downloadMaandrapportPdf(sessies, totals, accountEmail = '') {
-  const rows = sortedSessies(sessies);
-  const doc = new jsPDF({ format: 'a4', unit: 'mm' });
-  const pageW = doc.internal.pageSize.getWidth();
+export function downloadMaandrapportPdf(sessies, rapportTotalen, meta = {}) {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const margin = 14;
   let y = 16;
-
-  doc.setFontSize(16);
-  doc.setTextColor(10, 46, 26);
-  doc.text('LaadSmart — maandrapport', 14, y);
-  y += 8;
+  doc.setFontSize(14);
+  doc.setTextColor(20, 20, 20);
+  doc.text('Overzicht elektrisch laden (BTW)', margin, y);
+  y += 7;
+  if (meta.administratieNaam?.trim()) {
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(18, 70, 38);
+    const orgLines = doc.splitTextToSize(`Administratie / onderneming: ${meta.administratieNaam.trim()}`, 182);
+    doc.text(orgLines, margin, y);
+    y += orgLines.length * 5.2;
+    doc.setFont('helvetica', 'normal');
+  }
   doc.setFontSize(10);
   doc.setTextColor(60, 60, 60);
-  if (accountEmail) {
-    doc.text(`Account: ${accountEmail}`, 14, y);
-    y += 6;
+  doc.text(`Rapportperiode: ${formatDatumNlIso(meta.van)} t/m ${formatDatumNlIso(meta.tot)}`, margin, y);
+  y += 5;
+  if (meta.periodeLabel) {
+    doc.text(`(${meta.periodeLabel})`, margin, y);
+    y += 5;
   }
-  doc.text(`Gegenereerd: ${new Date().toLocaleString('nl-NL')}`, 14, y);
-  y += 10;
+  if (meta.email) {
+    doc.text(`Referentie account: ${meta.email}`, margin, y);
+    y += 5;
+  }
+  if (meta.geselecteerdePassen?.length) {
+    const passen = meta.geselecteerdePassen.join(', ');
+    const split = doc.splitTextToSize(`Geselecteerde laadpassen: ${passen}`, 180);
+    doc.text(split, margin, y);
+    y += 4 + split.length * 4.5;
+  }
+  doc.text('BTW-tarief op sessies: 21% (hoog)', margin, y);
+  y += 6;
+  doc.setTextColor(0, 0, 0);
 
-  doc.setDrawColor(31, 107, 61);
-  doc.setLineWidth(0.4);
-  doc.line(14, y, pageW - 14, y);
-  y += 8;
+  const totalenPerPas = meta.totalenPerPas || {};
+  const pasNamen = Object.keys(totalenPerPas).sort((a, b) => a.localeCompare(b, 'nl'));
+  if (pasNamen.length > 0) {
+    const bodySamen = pasNamen.map((naam) => {
+      const r = totalenPerPas[naam];
+      const incl = Number(r.bedrag ?? 0);
+      const btw = Number(r.btw ?? 0);
+      const excl = incl - btw;
+      return [naam, pasnrVoorNaam(meta, naam) || '—', String(r.sessies), `€${excl.toFixed(2)}`, `€${btw.toFixed(2)}`, `€${incl.toFixed(2)}`];
+    });
+    autoTable(doc, {
+      startY: y,
+      head: [['Leverancier', 'Pasnr.', 'Sessies', 'Excl. BTW', 'BTW 21%', 'Incl. BTW']],
+      body: bodySamen,
+      styles: { fontSize: 9, cellPadding: 3 },
+      headStyles: { fillColor: [26, 92, 52], textColor: 255 },
+      margin: { left: margin, right: margin },
+    });
+    y = (doc.lastAutoTable?.finalY ?? y) + 8;
+  }
 
-  doc.setFontSize(11);
-  doc.setTextColor(10, 46, 26);
-  doc.text('Samenvatting', 14, y);
-  y += 7;
-  doc.setFontSize(10);
-  doc.setTextColor(40, 40, 40);
-  const sam = [
-    ['Totaal incl. BTW', `€ ${totals.totaal.toFixed(2)}`],
-    ['Totaal excl. BTW', `€ ${totals.exclBtw.toFixed(2)}`],
-    ['Terug te vorderen BTW', `€ ${totals.totaalBtw.toFixed(2)}`],
-    ['Aantal sessies', String(rows.length)],
-  ];
-  sam.forEach(([label, val]) => {
-    doc.text(label, 14, y);
-    doc.text(val, pageW - 14, y, { align: 'right' });
-    y += 6;
-  });
-  y += 4;
+  doc.setFontSize(9);
+  doc.setTextColor(50, 50, 50);
+  doc.text('Specificatie — alle sessies in bovenstaande selectie', margin, y);
+  y += 5;
+  doc.setTextColor(0, 0, 0);
 
-  const body = rows.map((s) => {
-    const bed = Number(s.bedrag ?? 0);
+  const body = sessies.map((s) => {
+    const incl = Number(s.bedrag ?? 0);
     const btw = Number(s.btw ?? 0);
+    const excl = incl - btw;
     return [
-      String(s.datum ?? ''),
+      formatDatumNlIso(s.datum),
       String(s.pas_naam ?? ''),
+      pasnrVoorNaam(meta, s.pas_naam) || '—',
       String(s.kwh ?? ''),
-      bed.toFixed(2),
-      btw.toFixed(2),
-      (bed - btw).toFixed(2),
+      `€${excl.toFixed(2)}`,
+      `€${btw.toFixed(2)}`,
+      `€${incl.toFixed(2)}`,
     ];
   });
 
-  autoTable(doc, {
-    startY: y,
-    head: [['Datum', 'Laadpas', 'kWh', 'Incl. BTW', 'BTW', 'Excl. BTW']],
-    body,
-    theme: 'striped',
-    headStyles: { fillColor: [26, 92, 52], textColor: 255, fontStyle: 'bold' },
-    styles: { fontSize: 9, cellPadding: 2 },
-    columnStyles: {
-      0: { cellWidth: 28 },
-      3: { halign: 'right' },
-      4: { halign: 'right' },
-      5: { halign: 'right' },
-    },
-    margin: { left: 14, right: 14 },
-    didDrawPage: (data) => {
-      const footerY = doc.internal.pageSize.getHeight() - 8;
-      doc.setFontSize(8);
-      doc.setTextColor(120, 120, 120);
-      doc.text('LaadSmart — laadkosten overzicht', 14, footerY);
-      doc.text(`Pagina ${data.pageNumber}`, pageW - 14, footerY, { align: 'right' });
-    },
-  });
+  if (body.length === 0) {
+    doc.setFontSize(9);
+    doc.setTextColor(100, 100, 100);
+    doc.text('Geen sessieregels in deze selectie (lege specificatie, totalen € 0,00).', margin, y + 4);
+    y += 12;
+    doc.setTextColor(0, 0, 0);
+  } else {
+    autoTable(doc, {
+      startY: y,
+      head: [['Datum', 'Leverancier', 'Pasnr.', 'kWh', 'Excl. BTW', 'BTW', 'Incl. BTW']],
+      body,
+      styles: { fontSize: 7, cellPadding: 1.8 },
+      headStyles: { fillColor: [15, 61, 34], textColor: 255 },
+      margin: { left: margin, right: margin },
+    });
+    y = doc.lastAutoTable?.finalY ?? y + 40;
+  }
 
-  doc.save(rapportFilename('pdf'));
+  let sumY = y + 10;
+  doc.setFontSize(10);
+  doc.setTextColor(0, 0, 0);
+  doc.text(`Totaal incl. BTW: €${Number(rapportTotalen.totaal ?? 0).toFixed(2)}`, margin, sumY);
+  sumY += 6;
+  doc.text(`Totaal excl. BTW: €${Number(rapportTotalen.exclBtw ?? 0).toFixed(2)}`, margin, sumY);
+  sumY += 6;
+  doc.setTextColor(26, 92, 52);
+  doc.text(`Terug te vorderen / te verrekenen BTW (21%): €${Number(rapportTotalen.totaalBtw ?? 0).toFixed(2)}`, margin, sumY);
+  sumY += 10;
+  doc.setFontSize(8);
+  doc.setTextColor(80, 80, 80);
+  const disc = doc.splitTextToSize(DISCLAIMER, 182);
+  doc.text(disc, margin, sumY);
+  sumY += disc.length * 3.6 + 4;
+  doc.setTextColor(120, 120, 120);
+  doc.text(`Gegenereerd: ${new Date().toLocaleString('nl-NL')}`, margin, sumY);
+
+  doc.save(`laadsmart-btw-${bestandsnaamFragment(meta.van, meta.tot)}.pdf`);
 }

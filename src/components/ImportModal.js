@@ -1,70 +1,48 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '../supabase';
-import laadpassen from '../data/laadpassen';
 
-const AANBIEDERS = [
-  { id: 'fastned', titel: 'Fastned', hint: 'Export uit je Fastned-account (CSV)', accent: '#ff6b35' },
-  { id: 'shell', titel: 'Shell Recharge', hint: 'Shell-exportbestand (CSV)', accent: '#f7d117' },
-  { id: 'allego', titel: 'Allego', hint: 'Allego-exportbestand (CSV)', accent: '#00aaff' },
-  { id: 'tap', titel: 'Tap Electric', hint: 'Tap-exportbestand (CSV)', accent: '#2ecc71' },
-];
-
-const NAMEN = { fastned: 'Fastned', shell: 'Shell Recharge', allego: 'Allego', tap: 'Tap Electric' };
-
-function splitCsvRegel(regel) {
-  const sep = regel.includes(';') ? ';' : ',';
-  return regel.split(sep).map((k) => k.replace(/^"|"$/g, '').trim());
-}
-
-function verwerkCSV(tekst, aanbieder) {
-  const regels = tekst.split(/\r?\n/).filter((r) => r.trim());
-  const sessies = [];
-  regels.forEach((regel, index) => {
-    if (index === 0) return;
-    const kolommen = splitCsvRegel(regel);
-    if (kolommen.length >= 4) {
-      const bedrag = parseFloat(String(kolommen[3]).replace(',', '.')) || 0;
-      const btw = parseFloat(((bedrag / 1.21) * 0.21).toFixed(2));
-      sessies.push({
-        datum: kolommen[0] || new Date().toISOString().split('T')[0],
-        pas_naam: NAMEN[aanbieder],
-        kwh: parseFloat(String(kolommen[2]).replace(',', '.')) || 0,
-        bedrag,
-        btw,
-      });
-    }
-  });
-  return sessies;
-}
-
-function kleurVoorPas(naam) {
-  return laadpassen.find((p) => p.naam === naam)?.kleur || '#6db88a';
-}
-
-function ImportModal({ onSluiten, onImport }) {
+function ImportModal({ onSluiten, onImport, authUserId }) {
   const [stap, setStap] = useState('keuze');
   const [status, setStatus] = useState('');
   const [preview, setPreview] = useState([]);
 
-  const sluit = () => {
-    setStap('keuze');
-    setPreview([]);
-    setStatus('');
-    onSluiten();
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onSluiten();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onSluiten]);
+
+  const verwerkCSV = (tekst, aanbieder) => {
+    const regels = tekst.split('\n').filter((r) => r.trim());
+    const sessies = [];
+    regels.forEach((regel, index) => {
+      if (index === 0) return;
+      const kolommen = regel.split(',').map((k) => k.replace(/"/g, '').trim());
+      if (kolommen.length >= 4) {
+        const bedrag = parseFloat(kolommen[3]) || 0;
+        const btw = parseFloat(((bedrag / 1.21) * 0.21).toFixed(2));
+        const namen = { fastned: 'Fastned', shell: 'Shell Recharge', allego: 'Allego', tap: 'Tap Electric' };
+        sessies.push({
+          datum: kolommen[0] || new Date().toISOString().split('T')[0],
+          pas_naam: namen[aanbieder],
+          kwh: parseFloat(kolommen[2]) || 0,
+          bedrag,
+          btw,
+          excl_btw: parseFloat((bedrag - btw).toFixed(2)),
+        });
+      }
+    });
+    return sessies;
   };
 
   const handleCSV = (e, aanbieder) => {
-    const bestand = e.target.files?.[0];
-    e.target.value = '';
+    const bestand = e.target.files[0];
     if (!bestand) return;
     const reader = new FileReader();
     reader.onload = (evt) => {
-      const sessies = verwerkCSV(String(evt.target.result), aanbieder);
-      if (sessies.length === 0) {
-        setStatus('❌ Geen geldige rijen gevonden. Controleer of het bestand komma’s of puntkomma’s gebruikt.');
-        return;
-      }
-      setStatus('');
+      const sessies = verwerkCSV(evt.target.result, aanbieder);
       setPreview(sessies);
       setStap('preview');
     };
@@ -73,173 +51,142 @@ function ImportModal({ onSluiten, onImport }) {
 
   const importeerSessies = async () => {
     if (preview.length === 0) return;
-    const rows = preview.map((s) => ({
-      pas_naam: s.pas_naam,
-      kwh: Number(s.kwh),
-      bedrag: Number(s.bedrag),
-      btw: Number(s.btw),
-      datum: String(s.datum).slice(0, 10),
-    }));
     setStatus('⏳ Bezig met importeren...');
+    const rows = authUserId ? preview.map((r) => ({ ...r, user_id: authUserId })) : preview;
     const { error } = await supabase.from('sessies').insert(rows);
     if (error) {
       setStatus('❌ Fout: ' + error.message);
     } else {
       setStatus('✅ ' + preview.length + ' sessies geïmporteerd!');
       onImport();
-      setTimeout(() => sluit(), 1500);
+      setTimeout(() => onSluiten(), 1500);
     }
   };
 
-  const sectionTitle = {
-    fontSize: '11px',
-    color: '#a8f0c6',
-    textTransform: 'uppercase',
-    letterSpacing: '0.08em',
-    marginBottom: '10px',
-    marginTop: '4px',
+  const overlayStyle = {
+    position: 'fixed',
+    inset: 0,
+    background: 'rgba(0,0,0,0.72)',
+    zIndex: 200,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 'max(12px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom))',
+    boxSizing: 'border-box',
   };
 
-  const card = {
+  const modalStyle = {
+    background: '#0a2e1a',
+    border: '1px solid #2a8f52',
+    borderRadius: '18px',
+    padding: '28px 24px 24px',
+    width: 'min(640px, 96vw)',
+    maxHeight: 'min(92vh, 900px)',
+    overflow: 'hidden',
+    display: 'flex',
+    flexDirection: 'column',
+    boxSizing: 'border-box',
+    boxShadow: '0 24px 48px rgba(0,0,0,0.45)',
+  };
+
+  const scrollArea = { overflowY: 'auto', flex: 1, minHeight: 0, WebkitOverflowScrolling: 'touch' };
+
+  const sectionLabel = {
+    fontSize: '13px',
+    fontWeight: '700',
+    color: '#c8ff00',
+    marginBottom: '10px',
+    marginTop: '4px',
+    letterSpacing: '0.04em',
+    textTransform: 'uppercase',
+  };
+
+  const btnStyle = {
     background: '#0f3d22',
     border: '1px solid #1f6b3d',
     borderRadius: '14px',
-    padding: '14px 16px',
+    padding: '16px 18px',
+    width: '100%',
+    color: 'white',
+    fontSize: '16px',
+    fontWeight: '600',
+    cursor: 'pointer',
     marginBottom: '12px',
+    textAlign: 'left',
+    lineHeight: 1.35,
+    display: 'block',
+    boxSizing: 'border-box',
   };
 
+  const hintStyle = { fontSize: '14px', color: '#a8f0c6', lineHeight: 1.45, marginTop: '6px' };
+
   return (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(0,0,0,0.55)',
-        zIndex: 100,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '16px',
-        boxSizing: 'border-box',
-      }}
-      onClick={sluit}
-      role="presentation"
-    >
-      <div
-        role="dialog"
-        aria-labelledby="import-titel"
-        style={{
-          background: '#0a2e1a',
-          border: '1px solid #1f6b3d',
-          borderRadius: '20px',
-          width: '100%',
-          maxWidth: '400px',
-          maxHeight: 'min(88vh, 720px)',
-          display: 'flex',
-          flexDirection: 'column',
-          boxShadow: '0 16px 48px rgba(0,0,0,0.45)',
-          overflow: 'hidden',
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div
-          style={{
-            flexShrink: 0,
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            padding: '18px 18px 14px',
-            borderBottom: '1px solid #1f6b3d',
-          }}
-        >
-          <div id="import-titel" style={{ fontSize: '17px', fontWeight: '700', color: 'white' }}>
-            Sessies importeren
+    <div style={overlayStyle} onClick={onSluiten} role="presentation">
+      <div style={modalStyle} onClick={(e) => e.stopPropagation()} role="dialog" aria-labelledby="import-modal-title">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px', flexShrink: 0 }}>
+          <div>
+            <div id="import-modal-title" style={{ fontSize: '22px', fontWeight: '800', color: 'white', lineHeight: 1.2 }}>
+              Importeren
+            </div>
+            <p style={{ margin: '8px 0 0', fontSize: '15px', color: '#6db88a', lineHeight: 1.45, maxWidth: '52ch' }}>
+              Kies je aanbieder en upload het exportbestand. Daarna zie je een controlelijst voordat sessies worden opgeslagen.
+            </p>
           </div>
           <button
             type="button"
-            onClick={sluit}
-            aria-label="Sluiten"
+            onClick={onSluiten}
             style={{
               background: '#0f3d22',
               border: '1px solid #1f6b3d',
-              borderRadius: '10px',
               color: '#6db88a',
-              width: '36px',
-              height: '36px',
               cursor: 'pointer',
-              fontSize: '18px',
+              fontSize: '22px',
               lineHeight: 1,
+              width: '44px',
+              height: '44px',
+              borderRadius: '12px',
+              flexShrink: 0,
             }}
+            aria-label="Sluiten"
           >
-            ×
+            ✕
           </button>
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 18px 22px', WebkitOverflowScrolling: 'touch' }}>
+        <div style={scrollArea}>
           {stap === 'keuze' && (
             <>
-              <p style={{ color: '#6db88a', fontSize: '13px', lineHeight: 1.5, margin: '0 0 18px' }}>
-                Kies je aanbieder en selecteer het CSV-exportbestand. De eerste regel wordt als kopregel overgeslagen.
-              </p>
-
-              <div style={sectionTitle}>CSV van laadpas</div>
-              {AANBIEDERS.map((a) => (
-                <label
-                  key={a.id}
-                  htmlFor={`import-csv-${a.id}`}
-                  style={{
-                    ...card,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '12px',
-                    cursor: 'pointer',
-                    marginBottom: '10px',
-                  }}
-                >
-                  <span
-                    style={{
-                      width: '4px',
-                      alignSelf: 'stretch',
-                      minHeight: '40px',
-                      borderRadius: '2px',
-                      background: a.accent,
-                      flexShrink: 0,
-                    }}
-                  />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ color: 'white', fontWeight: '600', fontSize: '14px' }}>{a.titel}</div>
-                    <div style={{ color: '#6db88a', fontSize: '11px', marginTop: '3px', lineHeight: 1.35 }}>{a.hint}</div>
-                  </div>
-                  <span style={{ color: '#c8ff00', fontSize: '20px', flexShrink: 0 }} aria-hidden>›</span>
-                  <input id={`import-csv-${a.id}`} type="file" accept=".csv,text/csv" onChange={(e) => handleCSV(e, a.id)} style={{ display: 'none' }} />
+              <div style={sectionLabel}>CSV-bestand</div>
+              {[
+                ['fastned', 'Fastned', 'Export uit je Fastned-account (CSV).'],
+                ['shell', 'Shell Recharge', 'Shell Recharge factuur- of verbruiks-export.'],
+                ['allego', 'Allego', 'Allego CSV-export.'],
+                ['tap', 'Tap Electric', 'Tap Electric CSV-export.'],
+              ].map(([id, titel, hint]) => (
+                <label key={id} style={{ ...btnStyle, cursor: 'pointer' }}>
+                  <span style={{ color: '#c8ff00', fontSize: '15px' }}>{titel}</span>
+                  <span style={hintStyle}>{hint}</span>
+                  <input type="file" accept=".csv,text/csv" onChange={(e) => handleCSV(e, id)} style={{ display: 'none' }} />
                 </label>
               ))}
 
-              <div style={sectionTitle}>PDF-factuur</div>
-              <div style={{ ...card, opacity: 0.75 }}>
-                <div style={{ color: 'white', fontWeight: '600', fontSize: '14px', marginBottom: '4px' }}>PDF uploaden</div>
-                <div style={{ color: '#6db88a', fontSize: '12px', lineHeight: 1.45 }}>Automatisch uitlezen van PDF-facturen volgt later.</div>
-              </div>
+              <div style={{ ...sectionLabel, marginTop: '22px' }}>PDF (binnenkort)</div>
+              <label style={{ ...btnStyle, opacity: 0.85 }}>
+                <span style={{ fontSize: '16px' }}>Factuur als PDF</span>
+                <span style={hintStyle}>Automatisch uitlezen van PDF-facturen volgt in een latere versie.</span>
+                <input type="file" accept=".pdf" onChange={() => setStatus('PDF-import staat op de roadmap.')} style={{ display: 'none' }} />
+              </label>
 
-              <div style={sectionTitle}>Via e-mail</div>
-              <div style={card}>
-                <div style={{ color: 'white', fontSize: '14px', fontWeight: '600', marginBottom: '6px' }}>Factuur doorsturen</div>
-                <p style={{ color: '#6db88a', fontSize: '12px', margin: '0 0 8px', lineHeight: 1.45 }}>
-                  Stuur je factuurmail (als bijlage) naar:
-                </p>
-                <div
-                  style={{
-                    fontFamily: 'ui-monospace, monospace',
-                    color: '#c8ff00',
-                    fontSize: '13px',
-                    fontWeight: '600',
-                    wordBreak: 'break-all',
-                  }}
-                >
+              <div style={{ ...sectionLabel, marginTop: '22px' }}>Via e-mail</div>
+              <div style={{ background: '#0f3d22', border: '1px solid #1f6b3d', borderRadius: '14px', padding: '18px 20px' }}>
+                <div style={{ color: 'white', fontSize: '17px', fontWeight: '700', marginBottom: '8px' }}>Doorsturen naar</div>
+                <div style={{ color: '#6db88a', fontSize: '15px', lineHeight: 1.45 }}>Factuurmail forwarden naar:</div>
+                <div style={{ color: '#c8ff00', fontSize: '18px', fontWeight: '700', marginTop: '10px', wordBreak: 'break-all' }}>
                   import@laadsmart.app
                 </div>
-                <p style={{ color: '#6db88a', fontSize: '11px', margin: '10px 0 0', lineHeight: 1.4 }}>
-                  Let op: dit adres moet nog gekoppeld worden aan je app — tot die tijd werkt import via e-mail niet automatisch.
-                </p>
+                <div style={{ color: '#6db88a', fontSize: '14px', marginTop: '12px', lineHeight: 1.45 }}>
+                  Handig voor administratie: bewaar altijd de originele factuur voor de Belastingdienst.
+                </div>
               </div>
 
               {status && (
@@ -247,10 +194,12 @@ function ImportModal({ onSluiten, onImport }) {
                   style={{
                     background: '#0f3d22',
                     borderRadius: '12px',
-                    padding: '12px 14px',
-                    fontSize: '13px',
-                    color: status.startsWith('❌') ? '#ff9b9b' : '#c8ff00',
-                    lineHeight: 1.45,
+                    padding: '14px 16px',
+                    marginTop: '16px',
+                    fontSize: '15px',
+                    color: '#c8ff00',
+                    textAlign: 'center',
+                    lineHeight: 1.4,
                   }}
                 >
                   {status}
@@ -261,49 +210,63 @@ function ImportModal({ onSluiten, onImport }) {
 
           {stap === 'preview' && (
             <>
-              <p style={{ color: '#6db88a', fontSize: '13px', margin: '0 0 12px' }}>
-                <strong style={{ color: 'white' }}>{preview.length}</strong> sessies gevonden. Controleer de gegevens en bevestig.
-              </p>
-
-              <div style={{ overflowX: 'auto', marginBottom: '14px', borderRadius: '12px', border: '1px solid #1f6b3d' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
-                  <thead>
-                    <tr style={{ background: '#0f3d22', color: '#a8f0c6', textAlign: 'left' }}>
-                      <th style={{ padding: '10px 8px', fontWeight: '600' }}>Datum</th>
-                      <th style={{ padding: '10px 8px', fontWeight: '600' }}>Pas</th>
-                      <th style={{ padding: '10px 8px', fontWeight: '600', textAlign: 'right' }}>kWh</th>
-                      <th style={{ padding: '10px 8px', fontWeight: '600', textAlign: 'right' }}>€</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {preview.map((s, i) => (
-                      <tr key={i} style={{ borderTop: '1px solid #1f6b3d', color: 'white' }}>
-                        <td style={{ padding: '8px', borderLeft: `3px solid ${kleurVoorPas(s.pas_naam)}` }}>{s.datum}</td>
-                        <td style={{ padding: '8px', color: '#e8fff0' }}>{s.pas_naam}</td>
-                        <td style={{ padding: '8px', textAlign: 'right', color: '#6db88a' }}>{s.kwh}</td>
-                        <td style={{ padding: '8px', textAlign: 'right', fontWeight: '600' }}>€{Number(s.bedrag).toFixed(2)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div style={{ fontSize: '17px', fontWeight: '700', color: 'white', marginBottom: '6px' }}>
+                Controle voor import
               </div>
-
+              <div style={{ fontSize: '15px', color: '#6db88a', marginBottom: '16px', lineHeight: 1.45 }}>
+                {preview.length} sessie{preview.length !== 1 ? 's' : ''} gevonden. Controleer onderstaande regels (scroll indien nodig).
+              </div>
+              <div
+                style={{
+                  maxHeight: 'min(360px, 42vh)',
+                  overflowY: 'auto',
+                  borderRadius: '14px',
+                  border: '1px solid #1f6b3d',
+                  marginBottom: '16px',
+                }}
+              >
+                {preview.map((s, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      background: i % 2 === 0 ? '#0f3d22' : '#0a2e1a',
+                      borderBottom: i < preview.length - 1 ? '1px solid #1f6b3d' : 'none',
+                      padding: '14px 16px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: '12px',
+                    }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ color: 'white', fontSize: '16px', fontWeight: '600' }}>{s.pas_naam}</div>
+                      <div style={{ color: '#6db88a', fontSize: '14px', marginTop: '4px' }}>
+                        {s.datum} · {s.kwh} kWh
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                      <div style={{ color: 'white', fontSize: '16px', fontWeight: '700' }}>€{s.bedrag.toFixed(2)}</div>
+                      <div style={{ color: '#6db88a', fontSize: '13px', marginTop: '2px' }}>BTW €{s.btw.toFixed(2)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
               {status && (
                 <div
                   style={{
                     background: '#0f3d22',
                     borderRadius: '12px',
-                    padding: '12px',
-                    marginBottom: '12px',
-                    fontSize: '13px',
+                    padding: '14px',
+                    marginBottom: '14px',
+                    fontSize: '15px',
                     color: status.includes('❌') ? '#ff9b9b' : '#c8ff00',
                     textAlign: 'center',
+                    lineHeight: 1.4,
                   }}
                 >
                   {status}
                 </div>
               )}
-
               <button
                 type="button"
                 onClick={importeerSessies}
@@ -311,36 +274,35 @@ function ImportModal({ onSluiten, onImport }) {
                   background: '#c8ff00',
                   color: '#0a2e1a',
                   border: 'none',
-                  borderRadius: '12px',
-                  padding: '14px',
+                  borderRadius: '14px',
+                  padding: '16px',
                   width: '100%',
-                  fontSize: '15px',
+                  fontSize: '17px',
                   fontWeight: '700',
                   cursor: 'pointer',
-                  marginBottom: '10px',
+                  marginBottom: '12px',
                 }}
               >
-                Importeer {preview.length} sessies
+                Importeer {preview.length} sessie{preview.length !== 1 ? 's' : ''}
               </button>
               <button
                 type="button"
                 onClick={() => {
                   setStap('keuze');
-                  setPreview([]);
                   setStatus('');
                 }}
                 style={{
                   background: 'transparent',
                   border: '1px solid #1f6b3d',
-                  borderRadius: '12px',
-                  padding: '12px',
+                  borderRadius: '14px',
+                  padding: '14px',
                   width: '100%',
-                  fontSize: '14px',
+                  fontSize: '16px',
                   color: '#6db88a',
                   cursor: 'pointer',
                 }}
               >
-                Terug naar keuze
+                ← Andere aanbieder kiezen
               </button>
             </>
           )}
