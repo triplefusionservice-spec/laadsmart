@@ -14,7 +14,8 @@ create table if not exists public.subscriptions (
 alter table public.subscriptions enable row level security;
 
 -- User can read their own subscription row
-create policy if not exists "subscriptions_read_own"
+drop policy if exists "subscriptions_read_own" on public.subscriptions;
+create policy "subscriptions_read_own"
 on public.subscriptions
 for select
 to authenticated
