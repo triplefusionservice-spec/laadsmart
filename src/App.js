@@ -10,6 +10,7 @@ import { AccountScherm } from './components/AccountScherm';
 import HelpAiModal from './components/HelpAiModal';
 import ConfirmModal from './components/ConfirmModal';
 import GrafiekKosten from './components/GrafiekKosten';
+import LoginMeldingenModal from './components/LoginMeldingenModal';
 import { downloadMaandrapportCsv, downloadMaandrapportPdf } from './utils/maandrapportExport';
 import {
   getMergedPasses,
@@ -292,6 +293,8 @@ function App() {
   const [toonDisclaimer, setToonDisclaimer] = useState(false);
   const [toonAccountVerwijder, setToonAccountVerwijder] = useState(false);
   const [toonHelpAi, setToonHelpAi] = useState(false);
+  const [toonLoginMeldingen, setToonLoginMeldingen] = useState(false);
+  const [loginMeldingenItems, setLoginMeldingenItems] = useState([]);
   const [btwReminderEnabled, setBtwReminderEnabled] = useState(() => loadBtwReminderEnabled());
   const [btwReminderBrowserNotif, setBtwReminderBrowserNotif] = useState(() => loadBtwReminderBrowserNotif());
   const [laadpassenLijst, setLaadpassenLijst] = useState(() => sortPassesByVolgorde(getMergedPasses()));
@@ -323,6 +326,7 @@ function App() {
   const [prullenbakVersie, setPrullenbakVersie] = useState(0);
   const [prullenbakOpen, setPrullenbakOpen] = useState(false);
   const pendingAuthActionRef = useRef(null);
+  const loginMeldingenShownRef = useRef(null);
 
   const verversLaadpassen = () => setLaadpassenLijst(sortPassesByVolgorde(getMergedPasses()));
   const bumpPrullenbak = () => setPrullenbakVersie((v) => v + 1);
@@ -611,6 +615,60 @@ function App() {
   };
 
   const showToast = (message, type = 'info') => setToast({ message, type, ts: Date.now() });
+
+  const loginMeldingenReadKey = useMemo(() => (userId) => `laadsmart_login_meldingen_read_${userId}`, []);
+  const loadLoginMeldingenRead = useMemo(() => (userId) => {
+    try {
+      const raw = localStorage.getItem(loginMeldingenReadKey(userId));
+      const arr = raw ? JSON.parse(raw) : [];
+      return new Set(Array.isArray(arr) ? arr : []);
+    } catch {
+      return new Set();
+    }
+  }, [loginMeldingenReadKey]);
+  const saveLoginMeldingenRead = useMemo(() => (userId, readSet) => {
+    try {
+      localStorage.setItem(loginMeldingenReadKey(userId), JSON.stringify(Array.from(readSet)));
+    } catch {
+      // ignore
+    }
+  }, [loginMeldingenReadKey]);
+
+  useEffect(() => {
+    if (!gebruiker?.id) return;
+    if (mfaStatus !== 'klaar') return;
+    const userId = gebruiker.id;
+    if (loginMeldingenShownRef.current === userId) return;
+    loginMeldingenShownRef.current = userId;
+
+    const read = loadLoginMeldingenRead(userId);
+    const items = [];
+
+    const deadline = volgendeBtwDeadline(new Date());
+    const d = deadline ? dagenTot(deadline, new Date()) : null;
+    if (deadline && d != null && d <= 14) {
+      const id = `btw_deadline_${deadline.getFullYear()}_${deadline.getMonth() + 1}`;
+      items.push({
+        id,
+        titel: 'BTW-aangifte deadline',
+        tekst: d <= 0 ? `Deadline is vandaag (${formatDatumNl(deadline)}).` : `Nog ${d} dag(en) tot deadline (${formatDatumNl(deadline)}).`,
+        hint: 'Tip: Zet Rapport op “Zakelijk” voor je BTW-overzicht en export.',
+      });
+    }
+
+    items.push({
+      id: 'nieuw_kaart_tab',
+      titel: 'Nieuw: Kaart met laadpalen',
+      tekst: 'Er is een nieuwe tab “Kaart” met laadpalen in de buurt. Prijzen worden getoond als de bron ze meelevert.',
+      hint: 'Gebruik “Gebruik mijn locatie” voor resultaten in jouw omgeving.',
+    });
+
+    const unread = items.filter((it) => !read.has(it.id));
+    if (unread.length > 0) {
+      setLoginMeldingenItems(unread);
+      setToonLoginMeldingen(true);
+    }
+  }, [gebruiker?.id, mfaStatus, loadLoginMeldingenRead]);
 
   useEffect(() => {
     if (!btwReminderEnabled) return;
@@ -1267,6 +1325,20 @@ function App() {
       {toonImport && <ImportModal onSluiten={() => setToonImport(false)} onImport={haalSessiesOp} authUserId={gebruiker.id} />}
       {toonLaadpasForm && <LaadpasToevoegenModal onSluiten={() => setToonLaadpasForm(false)} onToegevoegd={verversLaadpassen} />}
       {toonHelpAi && <HelpAiModal onSluiten={() => setToonHelpAi(false)} huidigScherm={scherm} />}
+      <LoginMeldingenModal
+        open={toonLoginMeldingen}
+        titel="Meldingen bij inloggen"
+        items={loginMeldingenItems}
+        onClose={() => setToonLoginMeldingen(false)}
+        onMarkRead={(ids) => {
+          if (!gebruiker?.id) { setToonLoginMeldingen(false); return; }
+          const read = loadLoginMeldingenRead(gebruiker.id);
+          ids.forEach((id) => read.add(id));
+          saveLoginMeldingenRead(gebruiker.id, read);
+          setToonLoginMeldingen(false);
+          showToast('Gemarkeerd als gelezen.', 'info');
+        }}
+      />
       <ConfirmModal
         open={Boolean(confirmState?.open)}
         title={confirmState?.title}
